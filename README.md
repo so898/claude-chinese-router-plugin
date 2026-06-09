@@ -9,9 +9,11 @@ Claude Code 的中英文翻译代理插件。通过 Hook 机制在 Claude 处理
     │
     ▼
 UserPromptSubmit Hook → cn2en.sh
-    │  检测到中文 → 调用 Claude 翻译成英文 → 替换原始 prompt
+    │  检测到中文 → 调用 Claude 翻译成英文
+    │  通过 additionalContext 将英文翻译注入 Claude 上下文
+    │  同时 SKILL.md 指示 Claude 使用英文翻译而非中文原文
     ▼
-Claude 主会话（全程英文，零中文接触）
+Claude 主会话（基于英文翻译工作，中文原文仅作为参考）
     │
     ▼
 终端显示英文输出
@@ -19,9 +21,12 @@ Claude 主会话（全程英文，零中文接触）
     ▼
 Stop Hook → en2cn.sh
     │  解析 transcript 获取最后一条助手消息 → 翻译成中文
+    │  通过 systemMessage 将中文翻译展示给用户
     ▼
-终端追加显示中文翻译
+终端显示中文翻译（系统消息）
 ```
+
+> **技术说明：** Claude Code 的 UserPromptSubmit hook **不支持直接替换 prompt 文本**，只能通过 `additionalContext` 注入附加上下文。因此英文翻译会与中文原文一同传递给 Claude，但本插件通过 SKILL.md 指示 Claude 以英文翻译为准。Stop hook 的 stdout 仅写入 debug log，因此翻译结果通过 `systemMessage` 字段展示给用户。
 
 每次交互会额外产生 2 次轻量级 Claude 调用（翻译任务），延迟约 1-3 秒。
 
@@ -94,9 +99,9 @@ bash /path/to/claude-chinese-router-plugin/install.sh
 $ claude
 > 帮我在 src 目录下创建一个 utils.py 文件
 
-# Claude 收到的是英文翻译，用英文思考并执行
-# 终端先展示英文输出
-# 然后再追加中文翻译
+# Claude 收到的是：中文原文 + 英文翻译（通过 additionalContext 注入）
+# Claude 根据英文翻译理解指令，用英文思考并执行
+# 终端先展示英文输出，然后通过系统消息展示中文翻译
 ```
 
 ### 混合输入
@@ -111,10 +116,10 @@ $ claude
 ### 验证插件是否生效
 
 在 Claude Code 会话中提交一条中文 prompt，观察：
-1. 终端会先显示 Claude 的英文响应
-2. 英文响应下方会出现 `────` 分隔线和中文翻译
+1. Claude 应能正确理解并响应中文指令（说明英文翻译注入成功）
+2. 响应结束后会出现一条系统消息，其中包含中文翻译
 
-如果只看到英文输出且没有中文翻译，请检查 `~/.claude/settings.json` 中的 hooks 配置和脚本路径是否正确。
+如果 Claude 无法理解中文输入，或没有出现中文翻译系统消息，请检查 `~/.claude/settings.json` 中的 hooks 配置和脚本路径是否正确。
 
 ## 卸载
 
@@ -170,6 +175,14 @@ claude-chinese-router-plugin/
 **Q: 代码块和 URL 被翻译了怎么办？**
 
 不会。翻译 prompt 会指示 Claude 保持代码和技术内容原样输出，Claude 能自动识别并保留。
+
+**Q: 为什么我的中文输入还是会传给 Claude？**
+
+Claude Code 的 UserPromptSubmit hook **不支持直接替换 prompt 文本**——这是 Claude Code 本身的限制。本插件通过 `additionalContext` 注入英文翻译，并由 SKILL.md 指示 Claude 以英文翻译为准进行响应。中文原文对 Claude 的推理质量影响很小，因为 SKILL.md 和 additionalContext 中的指令会引导 Claude 优先使用英文翻译。
+
+**Q: 为什么翻译结果显示为系统消息（警告样式）？**
+
+Stop hook 的 stdout 仅写入 debug log，无法直接展示给用户。因此翻译结果通过 `systemMessage` JSON 字段输出，在终端上会以系统消息样式显示。这是 Claude Code hook 机制下的最佳可用方案。
 
 **Q: 为什么我的 UserPromptSubmit hook 不触发？**
 

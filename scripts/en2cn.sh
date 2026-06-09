@@ -1,14 +1,15 @@
 #!/bin/bash
 # en2cn.sh — Stop hook handler
 # Reads stdin JSON, parses transcript JSONL for last assistant message,
-# translates EN→CN via Claude subprocess, appends translation to output.
+# translates EN→CN via Claude subprocess, outputs JSON with systemMessage
+# so the Chinese translation is shown to the user.
 set -euo pipefail
 
 # Guard against recursive translation: when we spawn claude --print for
 # EN→CN translation, the Stop hook fires again for the child process.
 # Skip hook processing in that context to prevent infinite loops.
 if [ "${CHINESE_ROUTER_TRANSLATING:-}" = "1" ]; then
-    cat
+    echo '{}'
     exit 0
 fi
 
@@ -18,6 +19,7 @@ transcript_path=$(echo "$input" | jq -r '.transcript_path')
 
 # Validate transcript path
 if [ -z "$transcript_path" ] || [ "$transcript_path" = "null" ] || [ ! -f "$transcript_path" ]; then
+    echo '{}'
     exit 0
 fi
 
@@ -28,6 +30,7 @@ last_msg=$(tail -100 "$transcript_path" 2>/dev/null | jq -r 'select(.type == "as
 
 # Skip if no assistant message found or message is too short
 if [ -z "$last_msg" ] || [ ${#last_msg} -lt 10 ]; then
+    echo '{}'
     exit 0
 fi
 
@@ -36,5 +39,10 @@ translation_prompt=$(printf 'Translate the following English text to natural, fl
 translated=$(CHINESE_ROUTER_TRANSLATING=1 claude --print "$translation_prompt" 2>/dev/null)
 
 if [ -n "$translated" ]; then
-    printf '\n────────────────────\n%s\n' "$translated"
+    # Output JSON with systemMessage — shown as a system notification to the user
+    jq -n --arg t "$translated" '{
+      systemMessage: ("🇨🇳 \($t)")
+    }'
+else
+    echo '{}'
 fi
