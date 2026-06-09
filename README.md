@@ -28,7 +28,7 @@ Stop Hook → en2cn.sh
 ## 前置要求
 
 - [Claude Code](https://claude.com/claude-code) 已安装并可正常使用
-- `jq` 命令行 JSON 处理工具
+- `jq` 命令行 JSON 处理工具（`brew install jq`）
 - `perl`（macOS / Linux 自带）
 
 ## 安装
@@ -36,22 +36,21 @@ Stop Hook → en2cn.sh
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/<your-org>/claude-chinese-router-plugin.git
-cd claude-chinese-router-plugin
+git clone https://github.com/so898/claude-chinese-router-plugin.git
 ```
 
 ### 2. 运行安装脚本
-
-在**你要使用中文翻译代理的项目根目录**下运行：
 
 ```bash
 bash /path/to/claude-chinese-router-plugin/install.sh
 ```
 
-安装脚本会将 Hook 配置写入项目级 `.claude/settings.local.json`：
+安装脚本会将 Hook 配置写入全局配置 `~/.claude/settings.json`，与已有配置合并，不会覆盖 `permissions`、`enabledPlugins` 等现有字段：
 
 ```json
 {
+  "permissions": { "...": "保持不变" },
+  "enabledPlugins": { "...": "保持不变" },
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -77,11 +76,13 @@ bash /path/to/claude-chinese-router-plugin/install.sh
 }
 ```
 
-> **注意：** Hook 配置写在项目本地的 `settings.local.json`，而非 Plugin 目录，这是为了规避 Claude Code 已知 bug（[#10225](https://github.com/anthropics/claude-code/issues/10225)），该 bug 会导致 Plugin 中的 UserPromptSubmit hook 无法触发。
+安装完成后，**所有** Claude Code 项目都会自动启用翻译代理。
+
+> **注意：** Hook 配置写在 `~/.claude/settings.json` 而非 Plugin 目录，这是为了规避 Claude Code 已知 bug（[#10225](https://github.com/anthropics/claude-code/issues/10225)），该 bug 会导致 Plugin 中的 UserPromptSubmit hook 无法触发。
 
 ### 3. 开始使用
 
-在该项目中正常启动 Claude Code 即可。插件会自动生效，无需额外操作。
+正常启动 Claude Code，用中文输入即可。翻译代理会自动生效。
 
 ## 使用方法
 
@@ -111,29 +112,29 @@ $ claude
 
 在 Claude Code 会话中提交一条中文 prompt，观察：
 1. 终端会先显示 Claude 的英文响应
-2. 英文响应下方会出现 `────` 分隔线和中文字幕
+2. 英文响应下方会出现 `────` 分隔线和中文翻译
 
-如果只看到英文输出且没有中文翻译，请检查 `.claude/settings.local.json` 中的脚本路径是否正确。
+如果只看到英文输出且没有中文翻译，请检查 `~/.claude/settings.json` 中的 hooks 配置和脚本路径是否正确。
 
 ## 卸载
 
-### 移除 Hook 配置
-
-编辑项目下的 `.claude/settings.local.json`，删除 `hooks` 字段中与 Chinese Router 相关的配置：
+### 方式一：使用卸载脚本（推荐）
 
 ```bash
-# 方式一：手动编辑
-vim .claude/settings.local.json
-
-# 方式二：用 jq 一键清除 hooks
-jq 'del(.hooks)' .claude/settings.local.json > .claude/settings.local.json.tmp && \
-  mv .claude/settings.local.json.tmp .claude/settings.local.json
+bash /path/to/claude-chinese-router-plugin/uninstall.sh
 ```
 
-如果 settings.local.json 只有 hooks 配置，直接删除文件即可：
+卸载脚本会自动从 `~/.claude/settings.json` 中移除 Chinese Router 的 hook 配置，保留其他设置不变。
+
+### 方式二：手动移除
+
+编辑 `~/.claude/settings.json`，删除 `hooks.UserPromptSubmit` 和 `hooks.Stop` 中属于 Chinese Router 的条目。
+
+如果 hooks 对象仅剩 Chinese Router 的配置，直接删除整个 hooks 字段：
 
 ```bash
-rm .claude/settings.local.json
+jq 'del(.hooks.UserPromptSubmit) | del(.hooks.Stop)' ~/.claude/settings.json > /tmp/settings.json && \
+  mv /tmp/settings.json ~/.claude/settings.json
 ```
 
 ### 删除插件文件
@@ -149,14 +150,15 @@ claude-chinese-router-plugin/
 ├── .claude-plugin/
 │   └── plugin.json              # 插件元信息
 ├── .gitignore
-├── install.sh                   # 安装脚本
+├── README.md
+├── install.sh                   # 安装脚本（写入 ~/.claude/settings.json）
+├── uninstall.sh                 # 卸载脚本
 ├── scripts/
 │   ├── cn2en.sh                 # 中→英翻译（UserPromptSubmit hook）
 │   └── en2cn.sh                 # 英→中翻译（Stop hook）
-├── skills/
-│   └── chinese-router/
-│       └── SKILL.md             # 技能定义
-└── README.md
+└── skills/
+    └── chinese-router/
+        └── SKILL.md             # 技能定义
 ```
 
 ## 常见问题
@@ -171,11 +173,15 @@ claude-chinese-router-plugin/
 
 **Q: 为什么我的 UserPromptSubmit hook 不触发？**
 
-这是 Claude Code 的已知 bug（[#10225](https://github.com/anthropics/claude-code/issues/10225)）。本插件已将 hook 配置写在 `settings.local.json` 中绕过此问题。如果你手动把配置移到了 plugin 目录，请改回 `settings.local.json`。
+这是 Claude Code 的已知 bug（[#10225](https://github.com/anthropics/claude-code/issues/10225)）。本插件将 hook 配置写在 `~/.claude/settings.json` 中绕过此问题。如果你手动把配置移到了 plugin 目录，请改回来。
 
 **Q: 只想翻译输入不想翻译输出怎么办？**
 
-编辑 `.claude/settings.local.json`，删掉 `Stop` hook 配置块即可。
+编辑 `~/.claude/settings.json`，删掉 `hooks.Stop` 中 Chinese Router 的条目。
+
+**Q: 只想在特定项目启用怎么办？**
+
+将 `~/.claude/settings.json` 中的 hooks 配置移动到目标项目的 `.claude/settings.local.json` 即可。全局安装后再手动调整。
 
 ## 许可
 

@@ -1,54 +1,59 @@
 #!/bin/bash
-# install.sh — Inject Chinese Router hook config into .claude/settings.local.json
+# install.sh — Inject Chinese Router hook config into ~/.claude/settings.json
 # Works around anthropics/claude-code#10225 (plugin UserPromptSubmit hooks don't fire)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SETTINGS_DIR=".claude"
-SETTINGS_FILE="$SETTINGS_DIR/settings.local.json"
+SETTINGS_FILE="$HOME/.claude/settings.json"
 CN2EN_SCRIPT="$SCRIPT_DIR/scripts/cn2en.sh"
 EN2CN_SCRIPT="$SCRIPT_DIR/scripts/en2cn.sh"
 
-# Ensure .claude directory exists
-mkdir -p "$SETTINGS_DIR"
+# Ensure ~/.claude directory exists
+mkdir -p "$HOME/.claude"
 
-# Hook configuration to inject
-HOOK_CONFIG=$(cat <<JSON
+# Hook configuration for this plugin (as jq-compatible JSON fragment)
+NEW_HOOKS=$(cat <<JSON
 {
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash $CN2EN_SCRIPT"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash $EN2CN_SCRIPT"
-          }
-        ]
-      }
-    ]
-  }
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash $CN2EN_SCRIPT"
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash $EN2CN_SCRIPT"
+        }
+      ]
+    }
+  ]
 }
 JSON
 )
 
 if [ -f "$SETTINGS_FILE" ]; then
-    # Merge: keep existing settings, update hooks
+    # Merge: append our hooks to existing hooks, preserve all other settings
     tmp=$(mktemp)
-    jq --argjson hooks "$(echo "$HOOK_CONFIG" | jq '.hooks')" '.hooks = $hooks' "$SETTINGS_FILE" > "$tmp" 2>/dev/null || cp "$SETTINGS_FILE" "$tmp"
+    jq --argjson new "$NEW_HOOKS" '
+        .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + $new.UserPromptSubmit) |
+        .hooks.Stop = ((.hooks.Stop // []) + $new.Stop)
+    ' "$SETTINGS_FILE" > "$tmp"
     mv "$tmp" "$SETTINGS_FILE"
-    echo "Updated existing $SETTINGS_FILE"
+    echo "Updated $SETTINGS_FILE"
 else
-    echo "$HOOK_CONFIG" > "$SETTINGS_FILE"
+    # Fresh install
+    cat > "$SETTINGS_FILE" <<JSON
+{
+  "hooks": $NEW_HOOKS
+}
+JSON
     echo "Created $SETTINGS_FILE"
 fi
 
@@ -57,4 +62,4 @@ echo "Chinese Router Plugin hooks installed."
 echo "  CN→EN: UserPromptSubmit → $CN2EN_SCRIPT"
 echo "  EN→CN: Stop → $EN2CN_SCRIPT"
 echo ""
-echo "To uninstall, remove the hooks section from $SETTINGS_FILE"
+echo "To uninstall, run: bash $SCRIPT_DIR/uninstall.sh"
