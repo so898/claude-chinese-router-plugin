@@ -4,6 +4,14 @@
 # translates EN→CN via Claude subprocess, appends translation to output.
 set -euo pipefail
 
+# Guard against recursive translation: when we spawn claude --print for
+# EN→CN translation, the Stop hook fires again for the child process.
+# Skip hook processing in that context to prevent infinite loops.
+if [ "${CHINESE_ROUTER_TRANSLATING:-}" = "1" ]; then
+    cat
+    exit 0
+fi
+
 # Read hook input from stdin
 input=$(cat)
 transcript_path=$(echo "$input" | jq -r '.transcript_path')
@@ -25,7 +33,7 @@ fi
 
 # Translate EN→CN via Claude subprocess
 translation_prompt=$(printf 'Translate the following English text to natural, fluent Chinese.\nOutput ONLY the Chinese translation without any explanation, quotes, or formatting.\n\n---\n%s' "$last_msg")
-translated=$(CLAUDECODE= claude --print "$translation_prompt" 2>/dev/null)
+translated=$(CHINESE_ROUTER_TRANSLATING=1 claude --print "$translation_prompt" 2>/dev/null)
 
 if [ -n "$translated" ]; then
     printf '\n────────────────────\n%s\n' "$translated"

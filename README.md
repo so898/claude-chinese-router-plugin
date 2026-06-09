@@ -183,6 +183,10 @@ claude-chinese-router-plugin/
 
 将 `~/.claude/settings.json` 中的 hooks 配置移动到目标项目的 `.claude/settings.local.json` 即可。全局安装后再手动调整。
 
+## 致谢
+
+感谢 [0xBB2B](https://github.com/0xBB2B) 参与早期测试，其 Claude Max 账号额度在该过程中不幸耗尽——正是因为本插件翻译子进程递归触发的翻译循环 bug（现已修复：`cn2en.sh` 和 `en2cn.sh` 在翻译子进程中设置 `CHINESE_ROUTER_TRANSLATING=1` 环境变量并检查跳过，杜绝递归调用）。
+
 ## 许可
 
 MIT

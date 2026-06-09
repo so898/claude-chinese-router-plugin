@@ -4,6 +4,14 @@
 # Stdout replaces the user's original prompt for the main Claude session.
 set -euo pipefail
 
+# Guard against recursive translation: when we spawn claude --print for
+# CN→EN translation, the UserPromptSubmit hook fires again for the child
+# process. Skip hook processing in that context to prevent infinite loops.
+if [ "${CHINESE_ROUTER_TRANSLATING:-}" = "1" ]; then
+    cat
+    exit 0
+fi
+
 # Read hook input from stdin
 input=$(cat)
 prompt=$(echo "$input" | jq -r '.prompt')
@@ -18,9 +26,9 @@ fi
 # Use perl instead of grep -P for macOS compatibility (BSD grep lacks -P flag)
 if echo "$prompt" | perl -CS -e 'while (<STDIN>) { exit 0 if /[\x{4e00}-\x{9fff}]/ } exit 1' 2>/dev/null; then
     # Build translation prompt and send to Claude subprocess
-    # CLAUDECODE= bypasses the nested-session guard
+    # CHINESE_ROUTER_TRANSLATING=1 bypasses the nested-session guard
     translation_prompt=$(printf 'Translate the following Chinese text to natural, fluent English.\nOutput ONLY the English translation without any explanation, quotes, or formatting.\n\n---\n%s' "$prompt")
-    translated=$(CLAUDECODE= claude --print "$translation_prompt" 2>/dev/null)
+    translated=$(CHINESE_ROUTER_TRANSLATING=1 claude --print "$translation_prompt" 2>/dev/null)
 
     if [ -n "$translated" ]; then
         echo "$translated"
