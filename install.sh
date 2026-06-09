@@ -7,43 +7,53 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETTINGS_FILE="$HOME/.claude/settings.json"
 CN2EN_SCRIPT="$SCRIPT_DIR/scripts/cn2en.sh"
 EN2CN_SCRIPT="$SCRIPT_DIR/scripts/en2cn.sh"
+CN2EN_COMMAND="bash \"$CN2EN_SCRIPT\""
+EN2CN_COMMAND="bash \"$EN2CN_SCRIPT\""
+CN2EN_COMMAND_LEGACY="bash $CN2EN_SCRIPT"
+EN2CN_COMMAND_LEGACY="bash $EN2CN_SCRIPT"
 
 # Ensure ~/.claude directory exists
 mkdir -p "$HOME/.claude"
 
 # Hook configuration for this plugin (as jq-compatible JSON fragment)
-NEW_HOOKS=$(cat <<JSON
-{
-  "UserPromptSubmit": [
+NEW_HOOKS=$(jq -n --arg cn "$CN2EN_COMMAND" --arg en "$EN2CN_COMMAND" '{
+  UserPromptSubmit: [
     {
-      "hooks": [
+      hooks: [
         {
-          "type": "command",
-          "command": "bash $CN2EN_SCRIPT"
+          type: "command",
+          command: $cn
         }
       ]
     }
   ],
-  "Stop": [
+  Stop: [
     {
-      "hooks": [
+      hooks: [
         {
-          "type": "command",
-          "command": "bash $EN2CN_SCRIPT"
+          type: "command",
+          command: $en
         }
       ]
     }
   ]
-}
-JSON
-)
+}')
 
 if [ -f "$SETTINGS_FILE" ]; then
-    # Merge: append our hooks to existing hooks, preserve all other settings
+    # Merge: replace any existing Chinese Router hooks, preserve all other settings
     tmp=$(mktemp)
-    jq --argjson new "$NEW_HOOKS" '
-        .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) + $new.UserPromptSubmit) |
-        .hooks.Stop = ((.hooks.Stop // []) + $new.Stop)
+    jq \
+      --argjson new "$NEW_HOOKS" \
+      --arg cn "$CN2EN_COMMAND" \
+      --arg cn_legacy "$CN2EN_COMMAND_LEGACY" \
+      --arg en "$EN2CN_COMMAND" \
+      --arg en_legacy "$EN2CN_COMMAND_LEGACY" '
+        def remove_commands($a; $b):
+          map(.hooks = ((.hooks // []) | map(select(.command != $a and .command != $b)))) |
+          map(select((.hooks // []) | length > 0));
+
+        .hooks.UserPromptSubmit = (((.hooks.UserPromptSubmit // []) | remove_commands($cn; $cn_legacy)) + $new.UserPromptSubmit) |
+        .hooks.Stop = (((.hooks.Stop // []) | remove_commands($en; $en_legacy)) + $new.Stop)
     ' "$SETTINGS_FILE" > "$tmp"
     mv "$tmp" "$SETTINGS_FILE"
     echo "Updated $SETTINGS_FILE"

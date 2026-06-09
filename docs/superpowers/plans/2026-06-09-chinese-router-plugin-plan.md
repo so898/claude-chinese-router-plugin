@@ -1,10 +1,12 @@
 # Chinese Router Plugin Implementation Plan
 
+> **Status:** Historical implementation plan. The current Claude Code hook mechanism does not allow `UserPromptSubmit` to replace the user's prompt. The implemented project now injects an English translation through `hookSpecificOutput.additionalContext`, uses `systemMessage` for the Chinese output translation, and writes hooks to `~/.claude/settings.json` through idempotent install/uninstall scripts. Use `README.md`, the current scripts, and `docs/superpowers/specs/2026-06-09-chinese-router-plugin-design.md` as the source of truth.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a Claude Code plugin that intercepts Chinese user input, translates it to English before Claude sees it, then translates Claude's English output back to Chinese for the user — via UserPromptSubmit and Stop hooks.
+**Goal:** Build a Claude Code translation helper that detects Chinese user input, injects an English translation as priority context, then translates Claude's English output back to Chinese for the user — via UserPromptSubmit and Stop hooks.
 
-**Architecture:** Two shell scripts act as hook handlers. `cn2en.sh` parses UserPromptSubmit stdin JSON, detects Chinese, spawns a nested `claude --print` call to translate CN→EN, and replaces the prompt via stdout. `en2cn.sh` parses Stop stdin JSON, extracts the last assistant message from the transcript JSONL file, translates EN→CN via nested `claude --print`, and appends the translation to stdout. Hook configuration lives in project-level `settings.local.json` (not plugin hooks.json) due to known bug #10225.
+**Architecture:** Two shell scripts act as hook handlers. `cn2en.sh` parses UserPromptSubmit stdin JSON, detects Chinese, spawns a guarded `claude --print` call to translate CN→EN, and emits JSON `additionalContext`. `en2cn.sh` parses Stop stdin JSON, prefers `last_assistant_message`, translates EN→CN via guarded `claude --print`, and emits JSON `systemMessage`. Hook configuration lives in global `~/.claude/settings.json` due to known bug #10225.
 
 **Tech Stack:** Bash, jq, grep, Claude Code CLI, Claude Code Hooks API
 

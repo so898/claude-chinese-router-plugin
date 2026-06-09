@@ -2,17 +2,17 @@
 
 ## Problem
 
-Claude 模型在处理中文指令和中文用户输入时表现会下降（"降智"）。用户需要在 Claude 完全看不到中文的前提下使用中文交互。
+Claude 模型在处理中文指令和中文用户输入时表现可能下降。用户希望用中文交互，同时尽量让 Claude Code 基于英文译文理解和执行任务。
 
 ## Solution
 
 通过 Claude Code Hooks 机制实现中英文双向翻译代理：
 
-1. **UserPromptSubmit hook** — 用户输入中文 → `cn2en.sh` 检测中文并调用 Claude 子进程翻译 → 英文 prompt 替换原始输入，送入主 Claude
-2. Claude 全程用英文思考、执行、输出，完全看不见中文
-3. **Stop hook** — 捕获 Claude 英文输出 → `en2cn.sh` 解析 transcript 获取最后助手消息 → 翻译成中文 → 追加到终端
+1. **UserPromptSubmit hook** — 用户输入中文 → `cn2en.sh` 检测中文并调用 Claude 子进程翻译 → 通过 `additionalContext` 注入英文译文和“优先使用译文”的指示
+2. Claude 主会话仍会收到中文原文，但会同时收到英文译文作为优先参考
+3. **Stop hook** — 读取 `last_assistant_message` → 翻译成中文 → 通过 `systemMessage` 展示给用户
 
-翻译子进程通过 unset `CLAUDECODE` 环境变量实现嵌套 `claude` 调用。
+翻译子进程通过 `CHINESE_ROUTER_TRANSLATING=1` 环境变量跳过本插件 hook，避免递归翻译循环。
 
 ## Architecture
 
@@ -28,32 +28,31 @@ UserPromptSubmit Hook
     ├─ cn2en.sh:
     │    1. jq 解析 stdin JSON → 提取 prompt 字段
     │    2. 检测中文字符 (Unicode 一-鿿)
-    │    3. CLAUDECODE= claude -p "Translate to English: ..."
-    │    4. stdout → 英文 prompt 替换原始输入
+    │    3. CHINESE_ROUTER_TRANSLATING=1 claude --print "Translate to English: ..."
+    │    4. stdout → JSON hookSpecificOutput.additionalContext
     │
     ▼
-Claude Main Session (English only)
-    收到: "Create a utils.py in src/"
-    全程英文思考、执行、流式输出
+Claude Main Session
+    收到: 中文原文 + additionalContext 中的英文译文
+    按 hook 指示优先基于英文译文理解和执行
     │
     ▼
 Terminal: 先展示 Claude 英文输出 (流式)
     │
     ▼
 Stop Hook
-    │  stdin: {"transcript_path": "/path/to/session.jsonl", "stop_reason": "end_turn", ...}
+    │  stdin: {"last_assistant_message": "I've completed...", "transcript_path": "...", ...}
     │
     ├─ en2cn.sh:
-    │    1. jq 解析 stdin JSON → 提取 transcript_path
-    │    2. 解析 JSONL transcript → 获取最后一条 assistant 消息的 text 内容
-    │    3. CLAUDECODE= claude -p "Translate to Chinese: ..."
-    │    4. stdout → 中文翻译追加显示
+    │    1. jq 解析 stdin JSON → 优先提取 last_assistant_message
+    │    2. 如缺失 last_assistant_message，再解析 JSONL transcript
+    │    3. CHINESE_ROUTER_TRANSLATING=1 claude --print "Translate to Chinese: ..."
+    │    4. stdout → JSON systemMessage
     │
     ▼
-Terminal Final Output:
+Terminal Output:
     [Claude 英文响应]
-    ────────────────────
-    [中文翻译]
+    [系统消息样式的中文翻译]
 ```
 
 ### Subprocess Interaction (nested `claude` call)
@@ -61,7 +60,7 @@ Terminal Final Output:
 ```
 cn2en.sh / en2cn.sh
     │
-    ├─ unset CLAUDECODE              # 避免 "cannot launch inside another session" 错误
+    ├─ CHINESE_ROUTER_TRANSLATING=1  # 避免递归触发本插件 hook
     ├─ claude --print -p "..."       # 一次性翻译，不保留 session
     ├─ 读取 stdout 翻译结果
     └─ exit
@@ -99,8 +98,9 @@ claude-chinese-router-plugin/
 ├── scripts/
 │   ├── cn2en.sh                 # UserPromptSubmit hook: CN → EN
 │   └── en2cn.sh                 # Stop hook: EN → CN
-├── settings.local.json          # Hook configuration (project-level, gitignored)
-└── install.sh                   # One-shot: inject hooks into settings.local.json
+├── install.sh                   # Inject hooks into ~/.claude/settings.json
+├── uninstall.sh                 # Remove only this plugin's hooks
+└── tests/run.sh                 # Regression tests
 ```
 
 ## Components
@@ -112,7 +112,7 @@ Standard Claude Code plugin manifest. Does NOT contain hook configuration (see R
 ```json
 {
   "name": "chinese-router",
-  "description": "Chinese-English translation proxy via Claude Code hooks. Prevents Chinese text from reaching the main Claude session to avoid degraded performance on Chinese-language tasks.",
+  "description": "Chinese-English translation proxy via Claude Code hooks. Adds English translations to Chinese prompts and translates English responses back to Chinese.",
   "version": "1.0.0",
   "author": { "name": "Bill Cheng" },
   "license": "MIT"
@@ -138,11 +138,11 @@ Standard Claude Code plugin manifest. Does NOT contain hook configuration (see R
 **Logic:**
 1. `jq -r '.prompt'` 提取用户输入
 2. 检测中文字符：`echo "$prompt" | grep -qP '[\x{4e00}-\x{9fff}]'`
-3. 有中文 → `CLAUDECODE= claude --print -p "Translate the following Chinese text to natural, fluent English. Output ONLY the English translation..." ` (stdin 传入原文)
-4. 无中文 → echo 原文（透传）
-5. stdout 输出最终 prompt
+3. 有中文 → `CHINESE_ROUTER_TRANSLATING=1 claude --print "Translate the following Chinese text to natural, fluent English. Output ONLY the English translation..." `
+4. 无中文 → 输出空 JSON `{}`，不添加上下文
+5. 有译文 → stdout 输出 JSON，包含 `hookSpecificOutput.hookEventName = "UserPromptSubmit"` 和 `additionalContext`
 
-**Exit code:** 0（stdout 内容替换 Claude 看到的 prompt）
+**Exit code:** 0（JSON 输出被 Claude Code 解析；`additionalContext` 会和原 prompt 一起进入上下文）
 
 **Timeout:** 默认 30s，翻译任务足够
 
@@ -158,39 +158,41 @@ Standard Claude Code plugin manifest. Does NOT contain hook configuration (see R
   "cwd": "/current/dir",
   "permission_mode": "default",
   "hook_event_name": "Stop",
-  "stop_reason": "end_turn"
+  "stop_reason": "end_turn",
+  "last_assistant_message": "I've completed the refactoring..."
 }
 ```
 
 **Logic:**
-1. `jq -r '.transcript_path'` 获取 transcript 路径
-2. 解析 JSONL transcript 获取最后一条 assistant 消息：
+1. `jq -r '.last_assistant_message // empty'` 获取最后助手消息
+2. 如果该字段缺失，解析 JSONL transcript 获取最后一条 assistant 消息：
    ```bash
    tail -50 "$transcript_path" | jq -r 'select(.type == "assistant") | .message.content[] | select(.type == "text") | .text' | tail -1
    ```
    注意：`role` 嵌套在 `message.role` 中，非顶层字段；content 是数组格式
-3. 如果提取到有效英文输出 → `CLAUDECODE= claude --print -p "Translate to Chinese..."` (stdin 传入英文)
-4. 打印分隔线和中文翻译到 stdout
+3. 如果提取到有效英文输出 → `CHINESE_ROUTER_TRANSLATING=1 claude --print "Translate to Chinese..."` (stdin 传入英文)
+4. stdout 输出 JSON，包含 `systemMessage`
 
-**Exit code:** 0（stdout 内容出现在 transcript 中，用户可见）
+**Exit code:** 0（`systemMessage` 以系统消息样式展示给用户；普通 stdout 只进 debug log）
 
 ### 4. SKILL.md
 
-轻量 Skill 元数据，告知 Claude 翻译代理的存在和行为预期。内容：
+轻量 Skill 元数据，告知 Claude 翻译代理的存在和行为预期。仅运行 `install.sh` 不会自动加载该 skill；它在通过 `--plugin-dir` 或插件安装加载本仓库时可作为补充指令。内容：
 - 提醒主会话 Claude：用户的原始输入已被翻译为英文，对应中文翻译会展示给用户
 - 说明用户可能看到中英文双份输出
 - 如有必要，可以在用户可见的回复中保持英文风格
 
 ### 5. install.sh
 
-**背景：** 已知 bug [anthropics/claude-code#10225](https://github.com/anthropics/claude-code/issues/10225) — `UserPromptSubmit` hook 定义在 Plugin 的 `hooks.json` 中不会被触发。变通方案是将 hook 配置直接写入 `settings.local.json`。
+**背景：** 已知 bug [anthropics/claude-code#10225](https://github.com/anthropics/claude-code/issues/10225) — `UserPromptSubmit` hook 定义在 Plugin 的 `hooks.json` 中不会被触发。变通方案是将 hook 配置直接写入全局 `~/.claude/settings.json`。
 
 **功能：**
-- 在项目根目录自动创建/更新 `.claude/settings.local.json`
+- 自动创建/更新 `~/.claude/settings.json`
 - 注入 `UserPromptSubmit` 和 `Stop` hook 配置
-- 保留已有字段，只追加/更新 hooks 部分
+- 保留已有字段和用户其他 hooks
+- 重复运行时先移除本插件旧 hook，再写入一份新 hook
 
-### 6. settings.local.json
+### 6. settings.json
 
 ```json
 {
@@ -200,7 +202,7 @@ Standard Claude Code plugin manifest. Does NOT contain hook configuration (see R
         "hooks": [
           {
             "type": "command",
-            "command": "bash /path/to/claude-chinese-router-plugin/scripts/cn2en.sh"
+            "command": "bash \"/path/to/claude-chinese-router-plugin/scripts/cn2en.sh\""
           }
         ]
       }
@@ -210,7 +212,7 @@ Standard Claude Code plugin manifest. Does NOT contain hook configuration (see R
         "hooks": [
           {
             "type": "command",
-            "command": "bash /path/to/claude-chinese-router-plugin/scripts/en2cn.sh"
+            "command": "bash \"/path/to/claude-chinese-router-plugin/scripts/en2cn.sh\""
           }
         ]
       }
@@ -222,7 +224,7 @@ Standard Claude Code plugin manifest. Does NOT contain hook configuration (see R
 注意：
 - Hook 配置不在 Plugin 的 `.claude-plugin/` 目录中（受 bug #10225 影响）
 - `UserPromptSubmit` 不使用 `matcher` 字段
-- `Stop` hook 通过 exit code 0 允许正常停止，stdout 内容追加到 transcript
+- `Stop` hook 通过 exit code 0 允许正常停止，中文翻译通过 `systemMessage` 展示
 
 ## Resolved Technical Details
 
@@ -233,29 +235,30 @@ All hooks receive JSON on stdin. Common fields: `session_id`, `transcript_path`,
 | Hook | Extra Fields |
 |------|-------------|
 | UserPromptSubmit | `prompt` — user's submitted text |
-| Stop | `stop_reason` — why Claude stopped |
+| Stop | `stop_reason`, `last_assistant_message` |
 
 Sources: [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks), [Hook Development SKILL.md](https://github.com/anthropics/claude-code/blob/main/plugins/plugin-dev/skills/hook-development/SKILL.md)
 
-### 2. Prompt Replacement (UserPromptSubmit)
+### 2. Prompt Augmentation (UserPromptSubmit)
 
-Printing plain text to stdout (exit 0) **replaces** the user's original prompt. This is the mechanism cn2en.sh uses to swap Chinese for English.
+Claude Code 的 `UserPromptSubmit` hook 不支持替换用户原始 prompt。Plain stdout 或 JSON `additionalContext` 会作为上下文和原始 prompt 一起传给 Claude。本项目使用 JSON `additionalContext` 注入英文译文。
 
-Source: [Rewrite Prompts on the Fly with UserPromptSubmit Hooks](https://egghead.io/lessons/rewrite-prompts-on-the-fly-with-user-prompt-submit-hooks~76rrt)
+Source: [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks)
 
 ### 3. Nested Claude CLI Call
 
-From hook scripts, spawning `claude` subprocesses requires unsetting the `CLAUDECODE` environment variable to bypass the nested session guard (introduced in v2.1.39, Feb 2026):
+From hook scripts, spawning `claude` subprocesses also triggers hooks. Translation subprocesses set a guard environment variable so this plugin returns `{}` and does not recurse:
 
 ```bash
-CLAUDECODE= claude --print -p "translation instruction" <<< "$text_to_translate"
+CHINESE_ROUTER_TRANSLATING=1 claude --print "translation instruction..."
 ```
 
 Source: [anthropics/claude-agent-sdk-python#573](https://github.com/anthropics/claude-agent-sdk-python/issues/573), [canesin/coder#144](https://github.com/canesin/coder/issues/144)
 
-### 4. Transcript Parsing (Stop Hook)
+### 4. Stop Message Extraction
 
-Claude Code stores conversation as JSONL at `transcript_path`. Assistant messages use nested format:
+Modern Claude Code Stop hook input includes `last_assistant_message`, so transcript parsing is only a fallback. When falling back, Claude Code stores conversation as JSONL at `transcript_path`. Assistant messages use nested format:
+
 ```json
 {
   "type": "assistant",
@@ -279,7 +282,7 @@ Use Unicode range `\\u4e00-\\u9fff` (CJK Unified Ideographs) for Chinese charact
 
 ### 6. Plugin Hook Bug (#10225)
 
-`UserPromptSubmit` hooks defined in plugin `hooks.json` match but do not execute. Workaround: define hooks directly in `settings.local.json` (project-level, gitignored). Other hook types (`Stop`, `PostToolUse`) work correctly from plugins. `install.sh` automates the settings injection.
+`UserPromptSubmit` hooks defined in plugin `hooks.json` match but do not execute. Workaround: define hooks directly in `~/.claude/settings.json` through `install.sh`. Other hook types (`Stop`, `PostToolUse`) work correctly from plugins.
 
 Source: [anthropics/claude-code#10225](https://github.com/anthropics/claude-code/issues/10225)
 

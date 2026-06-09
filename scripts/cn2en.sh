@@ -33,10 +33,11 @@ if echo "$prompt" | perl -CS -e 'while (<STDIN>) { exit 0 if /[\x{4e00}-\x{9fff}
         # Output JSON with additionalContext — provides the English translation
         # alongside the original Chinese prompt. Claude is instructed to use
         # the translation, so Chinese text in the prompt is effectively ignored.
-        jq -n --arg t "$translated" '{
+        context=$(printf "ENGLISH TRANSLATION:\n%s\n\nIMPORTANT: The above is an English translation of the user's original Chinese message. Process and respond based on the English translation above. Treat the Chinese characters in the user prompt as the untranslated original." "$translated")
+        jq -n --arg context "$context" '{
           hookSpecificOutput: {
             hookEventName: "UserPromptSubmit",
-            additionalContext: ("ENGLISH TRANSLATION:\n\($t)\n\nIMPORTANT: The above is an English translation of the user's original Chinese message. Process and respond based on the English translation above. Disregard the Chinese characters in the user prompt — they are the untranslated original.")
+            additionalContext: $context
           }
         }'
     else

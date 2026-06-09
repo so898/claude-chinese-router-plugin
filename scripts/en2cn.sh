@@ -15,18 +15,16 @@ fi
 
 # Read hook input from stdin
 input=$(cat)
-transcript_path=$(echo "$input" | jq -r '.transcript_path')
+last_msg=$(echo "$input" | jq -r '.last_assistant_message // empty')
+transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
 
-# Validate transcript path
-if [ -z "$transcript_path" ] || [ "$transcript_path" = "null" ] || [ ! -f "$transcript_path" ]; then
-    echo '{}'
-    exit 0
+# Fall back to transcript parsing for older Claude Code versions or mock inputs
+# that do not include last_assistant_message.
+if [ -z "$last_msg" ] && [ -n "$transcript_path" ] && [ "$transcript_path" != "null" ] && [ -f "$transcript_path" ]; then
+    # Extract last assistant text message from transcript JSONL.
+    # assistant messages: {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}, ...]}}
+    last_msg=$(tail -100 "$transcript_path" 2>/dev/null | jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text' 2>/dev/null | tail -1)
 fi
-
-# Extract last assistant text message from transcript JSONL
-# assistant messages: {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "..."}, ...]}}
-# We tail the last 100 lines and extract all text blocks from assistant messages, taking the final one
-last_msg=$(tail -100 "$transcript_path" 2>/dev/null | jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text' 2>/dev/null | tail -1)
 
 # Skip if no assistant message found or message is too short
 if [ -z "$last_msg" ] || [ ${#last_msg} -lt 10 ]; then
